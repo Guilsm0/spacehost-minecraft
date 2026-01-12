@@ -1,0 +1,7 @@
+Documentação sobre como integrar nossa API ao seu serviço.
+
+O objetivo desta documentação da API é descrever de forma precisa e clara a funcionalidade deste serviço. Esta página abordará tudo o que você precisa saber antes de implementar nossa API em seu serviço.
+
+Padrões
+
+A maior parte desta API utiliza a API REST padronizada, o que, em termos simples, significa que você fará requisições HTTP ao nosso serviço. Atualmente, oferecemos suporte apenas a endpoints que utilizam os métodos GET`get` e ` POSTget`. Todos os endpoints de status retornam um corpo de resposta em formato JSON(**https://www.json.org/json-en.html**) , exceto se o código de status da resposta não estiver no 200-299intervalo de sucesso, caso em que o corpo será texto simples. Nenhum outro padrão de formatação de dados está disponível no momento, e não há planos futuros para oferecer suporte a outros formatos além de JSON. Todos os JSONs retornados por este serviço terão espaços em branco e caracteres desnecessários removidos para reduzir o consumo de banda da rede e o desperdício de informações.
