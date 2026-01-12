@@ -21,6 +21,11 @@ function generatePort(): number {
   return Math.floor(Math.random() * 10000) + 25565; // 25565-35565
 }
 
+// Helper function to generate world seed
+function generateWorldSeed(): string {
+  return Math.floor(Math.random() * 9223372036854775807).toString();
+}
+
 export const appRouter = router({
   system: systemRouter,
   

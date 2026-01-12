@@ -154,3 +154,36 @@
 - [ ] Logs de auditoria para ações administrativas
 - [ ] Otimização de queries do banco de dados
 - [ ] Cache de dados frequentemente acessados
+
+
+## Novas Funcionalidades Solicitadas
+
+### Descoberta de Servidor Externo
+- [x] Localizar servidor Minecraft externo por IP/domínio
+- [x] Verificar status do servidor remoto
+- [x] Exibir informações do servidor (MOTD, versão, jogadores)
+- [x] Conectar a servidor externo via protocolo Minecraft
+
+### Criação Automática de Mundo
+- [x] Gerar mundo automaticamente ao criar servidor
+- [x] Suporte para diferentes tipos de mundo (Flat, Normal, Large Biomes, Amplified)
+- [x] Configurar seed do mundo
+- [x] Gerar estrutura de pastas padrão do Minecraft
+
+### Upload/Download de Mundos
+- [x] Upload de mundo (.zip ou pasta, limite 1GB)
+- [x] Validação de estrutura do mundo (level.dat)
+- [x] Download do mundo atual como .zip
+- [x] Histórico de mundos enviados
+- [ ] Restauração de mundo anterior
+- [ ] Compressão automática de mundos para download
+
+### Funcionalidades em Breve
+- [x] Instalação automática de plugins/mods com um clique
+- [ ] Backup automático agendado (diário/semanal)
+- [ ] Sistema de notificações por email/in-app
+- [ ] Compartilhamento de servidor com outros usuários
+- [ ] Sistema de permissões avançado
+- [ ] Integração com Discord para notificações
+- [ ] Estatísticas de performance do servidor
+- [ ] Histórico de comandos executados
