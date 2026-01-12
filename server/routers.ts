@@ -6,6 +6,7 @@ import * as db from "./db";
 import { TRPCError } from "@trpc/server";
 import * as worldFileManager from "./world-file-manager";
 import * as worldGeneratorApi from "./world-generator-api";
+import * as worldBedrockGenerator from "./world-bedrock-generator";
 import { storagePut, storageGet } from "./storage";
 import { promises as fs } from "fs";
 import * as path from "path";
@@ -508,7 +509,86 @@ export const appRouter = router({
         }
       }),
 
-    // Upload world file (.world or .zip)
+    // Generate Bedrock world
+    generateBedrock: protectedProcedure
+      .input(z.object({
+        serverId: z.number(),
+        name: z.string().min(1).max(255),
+        gamemode: z.enum(["survival", "creative", "adventure", "spectator"]).default("survival"),
+        seed: z.string().optional(),
+        difficulty: z.enum(["peaceful", "easy", "normal", "hard"]).default("normal"),
+        pvp: z.boolean().default(true),
+        commandsEnabled: z.boolean().default(false),
+        netherEnabled: z.boolean().default(true),
+        endEnabled: z.boolean().default(true),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const server = await db.getServerById(input.serverId);
+        if (!server || server.userId !== ctx.user.id) {
+          throw new TRPCError({ code: 'FORBIDDEN' });
+        }
+
+        try {
+          const worldPath = path.join(SERVERS_DATA_PATH, server.slug, "worlds", input.name);
+          await fs.mkdir(worldPath, { recursive: true });
+
+          // Generate Bedrock world
+          const config = {
+            name: input.name,
+            seed: input.seed || worldBedrockGenerator.generateRandomSeed(),
+            gamemode: input.gamemode,
+            difficulty: input.difficulty,
+            pvp: input.pvp,
+            commandsEnabled: input.commandsEnabled,
+            netherEnabled: input.netherEnabled,
+            endEnabled: input.endEnabled,
+          };
+
+          const success = await worldBedrockGenerator.createBedrockWorld(worldPath, config);
+          if (!success) {
+            throw new Error("Falha ao criar mundo Bedrock");
+          }
+
+          // Validate world structure
+          const isValid = await worldFileManager.validateBedrockWorldStructure(worldPath);
+          if (!isValid) {
+            throw new Error("Mundo Bedrock gerado não passou na validação");
+          }
+
+          // Get world size
+          const size = await worldGeneratorApi.getDirectorySize(worldPath);
+
+          // Create world record in database
+          const world = await db.createWorld({
+            serverId: input.serverId,
+            name: input.name,
+            worldPath,
+            size,
+            worldType: "bedrock",
+            seed: config.seed,
+            difficulty: input.difficulty,
+            isActive: true,
+            isBackup: false,
+          });
+
+          // Log event
+          await db.logServerEvent({
+            serverId: input.serverId,
+            eventType: "config_change",
+            message: `Mundo Bedrock "${input.name}" gerado com sucesso`,
+          });
+
+          return world;
+        } catch (error) {
+          console.error("Erro ao gerar mundo Bedrock:", error);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Erro ao gerar mundo Bedrock: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }),
+
+    // Upload world file (.world, .zip or .mcworld)
     upload: protectedProcedure
       .input(z.object({
         serverId: z.number(),
@@ -524,8 +604,11 @@ export const appRouter = router({
         try {
           // Validate file extension
           if (!worldFileManager.isValidWorldFile(input.fileName)) {
-            throw new Error("Arquivo deve ser .world ou .zip");
+            throw new Error("Arquivo deve ser .world, .zip ou .mcworld");
           }
+
+          // Detect if it's a Bedrock world
+          const isBedrock = worldFileManager.isBedrocksWorld(input.fileName);
 
           // Create temp directory for extraction
           const tempDir = path.join(SERVERS_DATA_PATH, server.slug, "temp", Date.now().toString());
@@ -540,8 +623,13 @@ export const appRouter = router({
           await fs.mkdir(extractedPath, { recursive: true });
           await worldFileManager.extractWorldFile(uploadedFile, extractedPath);
 
-          // Validate world structure
-          const isValid = await worldFileManager.validateWorldStructure(extractedPath);
+          // Validate world structure (Java or Bedrock)
+          let isValid: boolean;
+          if (isBedrock) {
+            isValid = await worldFileManager.validateBedrockWorldStructure(extractedPath);
+          } else {
+            isValid = await worldFileManager.validateWorldStructure(extractedPath);
+          }
           if (!isValid) {
             throw new Error("Estrutura do mundo inválida");
           }

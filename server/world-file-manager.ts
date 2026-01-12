@@ -13,15 +13,23 @@ import { getDirectorySize } from "./world-generator-api";
 const MAX_WORLD_SIZE = 1024 * 1024 * 1024; // 1GB
 
 /**
- * Valida se um arquivo é um mundo válido (.world ou .zip)
+ * Valida se um arquivo é um mundo válido (.world, .zip ou .mcworld)
  */
 export function isValidWorldFile(filename: string): boolean {
   const ext = path.extname(filename).toLowerCase();
-  return ext === ".world" || ext === ".zip";
+  return ext === ".world" || ext === ".zip" || ext === ".mcworld";
 }
 
 /**
- * Valida a estrutura de um mundo extraído
+ * Detecta se um arquivo é Bedrock Edition (.mcworld)
+ */
+export function isBedrocksWorld(filename: string): boolean {
+  const ext = path.extname(filename).toLowerCase();
+  return ext === ".mcworld";
+}
+
+/**
+ * Valida a estrutura de um mundo extraído (Java Edition)
  */
 export async function validateWorldStructure(worldPath: string): Promise<boolean> {
   try {
@@ -59,7 +67,7 @@ export async function validateWorldStructure(worldPath: string): Promise<boolean
 }
 
 /**
- * Extrai um arquivo .world ou .zip
+ * Extrai um arquivo .world, .zip ou .mcworld
  */
 export async function extractWorldFile(
   filePath: string,
@@ -68,13 +76,13 @@ export async function extractWorldFile(
   try {
     const ext = path.extname(filePath).toLowerCase();
 
-    if (ext === ".zip") {
-      // Usar unzip para extrair
+    if (ext === ".zip" || ext === ".mcworld") {
+      // Usar unzip para extrair (mcworld é apenas um zip renomeado)
       const AdmZip = require("adm-zip");
       const zip = new AdmZip(filePath);
       zip.extractAllTo(extractPath, true);
     } else if (ext === ".world") {
-      // Tratar .world como arquivo comprimido
+      // Tratar .world como arquivo comprimido com gzip
       await new Promise((resolve, reject) => {
         pipeline(
           createReadStream(filePath),
@@ -250,5 +258,89 @@ export async function removeWorldPath(filePath: string): Promise<void> {
   } catch (error) {
     console.error(`[WorldRemoval] Erro ao remover: ${error}`);
     throw error;
+  }
+}
+
+/**
+ * Valida a estrutura de um mundo Bedrock Edition
+ */
+export async function validateBedrockWorldStructure(worldPath: string): Promise<boolean> {
+  try {
+    const requiredFiles = ["level.dat", "levelname.txt"];
+    const requiredDirs = ["db"];
+
+    for (const file of requiredFiles) {
+      const filePath = path.join(worldPath, file);
+      try {
+        await fs.access(filePath);
+      } catch {
+        console.warn(`[BedrockValidation] Arquivo ausente: ${file}`);
+        return false;
+      }
+    }
+
+    for (const dir of requiredDirs) {
+      const dirPath = path.join(worldPath, dir);
+      try {
+        const stats = await fs.stat(dirPath);
+        if (!stats.isDirectory()) {
+          return false;
+        }
+      } catch {
+        console.warn(`[BedrockValidation] Diretório ausente: ${dir}`);
+        return false;
+      }
+    }
+
+    return true;
+  } catch (error) {
+    console.error(`[BedrockValidation] Erro na validação: ${error}`);
+    return false;
+  }
+}
+
+/**
+ * Compacta um mundo Bedrock para .mcworld
+ */
+export async function compressBedrockWorldForDownload(
+  worldPath: string,
+  outputPath: string
+): Promise<boolean> {
+  try {
+    // Verificar tamanho
+    const size = await getDirectorySize(worldPath);
+    if (size > MAX_WORLD_SIZE) {
+      throw new Error(`Mundo muito grande: ${size} bytes (máximo: ${MAX_WORLD_SIZE} bytes)`);
+    }
+
+    // Usar adm-zip para criar arquivo zip
+    const AdmZip = require("adm-zip");
+    const zip = new AdmZip();
+
+    // Adicionar todos os arquivos do mundo
+    const addFilesToZip = async (dir: string, zipPath: string = "") => {
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        const zipFilePath = path.join(zipPath, entry.name);
+
+        if (entry.isDirectory()) {
+          await addFilesToZip(fullPath, zipFilePath);
+        } else {
+          const fileData = await fs.readFile(fullPath);
+          zip.addFile(zipFilePath, fileData);
+        }
+      }
+    };
+
+    await addFilesToZip(worldPath);
+    zip.writeZip(outputPath);
+
+    console.log(`[BedrockCompression] Mundo Bedrock compactado com sucesso`);
+    return true;
+  } catch (error) {
+    console.error(`[BedrockCompression] Erro ao compactar: ${error}`);
+    return false;
   }
 }
