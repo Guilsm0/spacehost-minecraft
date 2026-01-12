@@ -187,3 +187,26 @@
 - [ ] Integração com Discord para notificações
 - [ ] Estatísticas de performance do servidor
 - [ ] Histórico de comandos executados
+
+
+## Tarefas Finais (Processamento Paralelo)
+
+### Criação Automática de Mundo (sem Upload)
+- [x] Criar mundo automaticamente ao criar servidor
+- [x] Gerar estrutura padrão do Minecraft
+- [x] Configurar arquivo level.dat com opções do servidor
+- [x] Criar pasta region vazia
+- [x] Gerar session.lock
+- [x] Criar uid.dat único
+
+### Integração com API Aternos
+- [x] Conectar com API Aternos (sleeyax/aternos-api)
+- [x] Autenticação com credenciais Aternos
+- [x] Listar servidores do usuário
+- [x] Iniciar/parar servidor
+- [x] Obter status em tempo real
+- [x] Executar comandos no servidor
+- [x] Obter logs do servidor
+- [x] Gerenciar jogadores (whitelist, ops, bans)
+- [x] Configurar opções do servidor
+- [x] Fazer backup automático
