@@ -238,3 +238,27 @@ export const notifications = mysqlTable("notifications", {
 
 export type Notification = typeof notifications.$inferSelect;
 export type InsertNotification = typeof notifications.$inferInsert;
+
+/**
+ * Server worlds
+ */
+export const worlds = mysqlTable("worlds", {
+  id: int("id").autoincrement().primaryKey(),
+  serverId: int("serverId").notNull(),
+  name: varchar("name", { length: 255 }).notNull(),
+  worldPath: varchar("worldPath", { length: 500 }).notNull(),
+  fileKey: varchar("fileKey", { length: 500 }), // S3 key
+  fileUrl: text("fileUrl"), // S3 URL
+  size: bigint("size", { mode: "number" }).default(0).notNull(), // Bytes
+  worldType: varchar("worldType", { length: 50 }).default("default").notNull(),
+  seed: varchar("seed", { length: 100 }),
+  difficulty: mysqlEnum("difficulty", ["peaceful", "easy", "normal", "hard"]).default("normal").notNull(),
+  isActive: boolean("isActive").default(true).notNull(), // Current active world
+  isBackup: boolean("isBackup").default(false).notNull(), // Is this a backup?
+  backupOf: int("backupOf"), // ID of the world this is a backup of
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type World = typeof worlds.$inferSelect;
+export type InsertWorld = typeof worlds.$inferInsert;

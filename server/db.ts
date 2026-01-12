@@ -11,11 +11,13 @@ import {
   installedAddons, InsertInstalledAddon, InstalledAddon,
   serverAccess, InsertServerAccess, ServerAccess,
   notificationPreferences, InsertNotificationPreference, NotificationPreference,
-  notifications, InsertNotification, Notification
+  notifications, InsertNotification, Notification,
+  worlds, InsertWorld, World
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
+type DbType = Awaited<ReturnType<typeof getDb>>;
 
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
@@ -413,4 +415,99 @@ export async function markAllNotificationsAsRead(userId: number): Promise<void> 
   if (!db) throw new Error("Database not available");
 
   await db.update(notifications).set({ isRead: true }).where(eq(notifications.userId, userId));
+}
+
+// ============ WORLD OPERATIONS ============
+
+export async function createWorld(world: InsertWorld): Promise<World> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const result = await db.insert(worlds).values(world);
+  const id = result[0].insertId as number;
+  return await getWorldById(id) as World;
+}
+
+export async function getWorldById(worldId: number): Promise<World | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db.select().from(worlds).where(eq(worlds.id, worldId)).limit(1);
+  return result[0];
+}
+
+export async function getWorldsByServerId(serverId: number): Promise<World[]> {
+  const db = await getDb();
+  if (!db) return [];
+
+  return await db.select().from(worlds).where(eq(worlds.serverId, serverId));
+}
+
+export async function getActiveWorldByServerId(serverId: number): Promise<World | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db.select().from(worlds)
+    .where(and(eq(worlds.serverId, serverId), eq(worlds.isActive, true)))
+    .limit(1);
+  return result[0];
+}
+
+export async function getWorldBackups(worldId: number): Promise<World[]> {
+  const db = await getDb();
+  if (!db) return [];
+
+  return await db.select().from(worlds)
+    .where(and(eq(worlds.backupOf, worldId), eq(worlds.isBackup, true)))
+    .orderBy(desc(worlds.createdAt));
+}
+
+export async function updateWorld(worldId: number, updates: Partial<InsertWorld>): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db.update(worlds).set(updates).where(eq(worlds.id, worldId));
+}
+
+export async function deleteWorld(worldId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db.delete(worlds).where(eq(worlds.id, worldId));
+}
+
+export async function setActiveWorld(serverId: number, worldId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  // Deactivate all other worlds
+  await db.update(worlds).set({ isActive: false }).where(eq(worlds.serverId, serverId));
+  
+  // Activate the selected world
+  await db.update(worlds).set({ isActive: true }).where(eq(worlds.id, worldId));
+}
+
+export async function createWorldBackup(worldId: number, backupName: string): Promise<World> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const originalWorld = await getWorldById(worldId);
+  if (!originalWorld) throw new Error("World not found");
+
+  const backup: InsertWorld = {
+    serverId: originalWorld.serverId,
+    name: backupName,
+    worldPath: originalWorld.worldPath,
+    fileKey: originalWorld.fileKey,
+    fileUrl: originalWorld.fileUrl,
+    size: originalWorld.size,
+    worldType: originalWorld.worldType,
+    seed: originalWorld.seed,
+    difficulty: originalWorld.difficulty,
+    isActive: false,
+    isBackup: true,
+    backupOf: worldId,
+  };
+
+  return await createWorld(backup);
 }

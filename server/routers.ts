@@ -1,10 +1,14 @@
-import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import * as db from "./db";
 import { TRPCError } from "@trpc/server";
+import * as worldFileManager from "./world-file-manager";
+import * as worldGeneratorApi from "./world-generator-api";
+import { storagePut, storageGet } from "./storage";
+import { promises as fs } from "fs";
+import * as path from "path";
 
 // Helper function to generate unique slug
 function generateSlug(name: string): string {
@@ -25,6 +29,12 @@ function generatePort(): number {
 function generateWorldSeed(): string {
   return Math.floor(Math.random() * 9223372036854775807).toString();
 }
+
+const WORLD_GENERATOR_JAR = path.join(__dirname, "../WorldGeneratorApi.jar");
+const SERVERS_DATA_PATH = path.join(__dirname, "../servers-data");
+
+// Ensure servers data directory exists
+fs.mkdir(SERVERS_DATA_PATH, { recursive: true }).catch(console.error);
 
 export const appRouter = router({
   system: systemRouter,
@@ -387,6 +397,335 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         await db.deletePlayer(input.playerId);
         return { success: true };
+      }),
+  }),
+
+  worlds: router({
+    // List worlds for a server
+    list: protectedProcedure
+      .input(z.object({ serverId: z.number() }))
+      .query(async ({ input, ctx }) => {
+        const server = await db.getServerById(input.serverId);
+        if (!server || server.userId !== ctx.user.id) {
+          throw new TRPCError({ code: 'FORBIDDEN' });
+        }
+        return await db.getWorldsByServerId(input.serverId);
+      }),
+
+    // Get active world
+    getActive: protectedProcedure
+      .input(z.object({ serverId: z.number() }))
+      .query(async ({ input, ctx }) => {
+        const server = await db.getServerById(input.serverId);
+        if (!server || server.userId !== ctx.user.id) {
+          throw new TRPCError({ code: 'FORBIDDEN' });
+        }
+        return await db.getActiveWorldByServerId(input.serverId);
+      }),
+
+    // Generate new world with WorldGeneratorApi
+    generate: protectedProcedure
+      .input(z.object({
+        serverId: z.number(),
+        name: z.string().min(1).max(255),
+        worldType: z.enum(["default", "flat", "large_biomes", "amplified"]).default("default"),
+        seed: z.string().optional(),
+        difficulty: z.enum(["peaceful", "easy", "normal", "hard"]).default("normal"),
+        pvp: z.boolean().default(true),
+        spawnProtection: z.number().default(16),
+        commandBlocks: z.boolean().default(false),
+        netherEnabled: z.boolean().default(true),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const server = await db.getServerById(input.serverId);
+        if (!server || server.userId !== ctx.user.id) {
+          throw new TRPCError({ code: 'FORBIDDEN' });
+        }
+
+        try {
+          const worldPath = path.join(SERVERS_DATA_PATH, server.slug, "worlds", input.name);
+          await fs.mkdir(worldPath, { recursive: true });
+
+          // Generate world using WorldGeneratorApi
+          const config = {
+            name: input.name,
+            seed: input.seed || worldGeneratorApi.generateRandomSeed(),
+            worldType: input.worldType,
+            difficulty: input.difficulty,
+            pvp: input.pvp,
+            spawnProtection: input.spawnProtection,
+            commandBlocks: input.commandBlocks,
+            netherEnabled: input.netherEnabled,
+          };
+
+          // Try to use WorldGeneratorApi if available
+          try {
+            await worldGeneratorApi.generateWorldWithApi(WORLD_GENERATOR_JAR, worldPath, config);
+          } catch (error) {
+            console.warn("WorldGeneratorApi not available, creating basic world structure");
+            // Fallback: create basic world structure
+            await fs.mkdir(path.join(worldPath, "region"), { recursive: true });
+            await fs.mkdir(path.join(worldPath, "playerdata"), { recursive: true });
+            await worldGeneratorApi.createLevelDat(worldPath, config);
+          }
+
+          // Validate world structure
+          const isValid = await worldFileManager.validateWorldStructure(worldPath);
+          if (!isValid) {
+            throw new Error("Mundo gerado não passou na validação");
+          }
+
+          // Get world size
+          const size = await worldGeneratorApi.getDirectorySize(worldPath);
+
+          // Create world record in database
+          const world = await db.createWorld({
+            serverId: input.serverId,
+            name: input.name,
+            worldPath,
+            size,
+            worldType: input.worldType,
+            seed: config.seed,
+            difficulty: input.difficulty,
+            isActive: true,
+            isBackup: false,
+          });
+
+          // Log event
+          await db.logServerEvent({
+            serverId: input.serverId,
+            eventType: "config_change",
+            message: `Mundo "${input.name}" gerado com sucesso`,
+          });
+
+          return world;
+        } catch (error) {
+          console.error("Erro ao gerar mundo:", error);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Erro ao gerar mundo: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }),
+
+    // Upload world file (.world or .zip)
+    upload: protectedProcedure
+      .input(z.object({
+        serverId: z.number(),
+        fileName: z.string(),
+        fileData: z.instanceof(Buffer),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const server = await db.getServerById(input.serverId);
+        if (!server || server.userId !== ctx.user.id) {
+          throw new TRPCError({ code: 'FORBIDDEN' });
+        }
+
+        try {
+          // Validate file extension
+          if (!worldFileManager.isValidWorldFile(input.fileName)) {
+            throw new Error("Arquivo deve ser .world ou .zip");
+          }
+
+          // Create temp directory for extraction
+          const tempDir = path.join(SERVERS_DATA_PATH, server.slug, "temp", Date.now().toString());
+          const uploadedFile = path.join(tempDir, input.fileName);
+          await fs.mkdir(tempDir, { recursive: true });
+
+          // Save uploaded file
+          await fs.writeFile(uploadedFile, input.fileData);
+
+          // Extract world
+          const extractedPath = path.join(tempDir, "extracted");
+          await fs.mkdir(extractedPath, { recursive: true });
+          await worldFileManager.extractWorldFile(uploadedFile, extractedPath);
+
+          // Validate world structure
+          const isValid = await worldFileManager.validateWorldStructure(extractedPath);
+          if (!isValid) {
+            throw new Error("Estrutura do mundo inválida");
+          }
+
+          // Get active world and backup it
+          const activeWorld = await db.getActiveWorldByServerId(input.serverId);
+          if (activeWorld) {
+            const backupPath = path.join(SERVERS_DATA_PATH, server.slug, "worlds", `${activeWorld.name}_backup_${Date.now()}`);
+            await worldFileManager.cloneWorldForBackup(activeWorld.worldPath, backupPath);
+            
+            // Create backup record
+            await db.createWorldBackup(activeWorld.id, `Backup antes de upload - ${new Date().toLocaleString()}`);
+          }
+
+          // Replace current world with uploaded one
+          const worldPath = path.join(SERVERS_DATA_PATH, server.slug, "worlds", "current");
+          await worldFileManager.replaceWorldWithUpload(worldPath, extractedPath);
+
+          // Get world size
+          const size = await worldGeneratorApi.getDirectorySize(worldPath);
+
+          // Create/update world record
+          let world = await db.getActiveWorldByServerId(input.serverId);
+          if (world) {
+            await db.updateWorld(world.id, {
+              worldPath,
+              size,
+              isActive: true,
+            });
+          } else {
+            world = await db.createWorld({
+              serverId: input.serverId,
+              name: "current",
+              worldPath,
+              size,
+              isActive: true,
+              isBackup: false,
+            });
+          }
+
+          // Clean up temp directory
+          await worldFileManager.removeWorldPath(tempDir);
+
+          // Log event
+          await db.logServerEvent({
+            serverId: input.serverId,
+            eventType: "config_change",
+            message: `Mundo importado: ${input.fileName}`,
+          });
+
+          return world;
+        } catch (error) {
+          console.error("Erro ao fazer upload de mundo:", error);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Erro ao fazer upload: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }),
+
+    // Download world
+    download: protectedProcedure
+      .input(z.object({ worldId: z.number() }))
+      .query(async ({ input, ctx }) => {
+        const world = await db.getWorldById(input.worldId);
+        if (!world) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Mundo não encontrado' });
+        }
+
+        const server = await db.getServerById(world.serverId);
+        if (!server || server.userId !== ctx.user.id) {
+          throw new TRPCError({ code: 'FORBIDDEN' });
+        }
+
+        try {
+          // Compress world for download
+          const tempDir = path.join(SERVERS_DATA_PATH, server.slug, "downloads");
+          await fs.mkdir(tempDir, { recursive: true });
+          const zipPath = path.join(tempDir, `${world.name}_${Date.now()}.zip`);
+
+          await worldFileManager.compressWorldForDownload(world.worldPath, zipPath);
+
+          // Upload to storage
+          const fileData = await fs.readFile(zipPath);
+          const { url } = await storagePut(
+            `worlds/${server.slug}/${world.name}_${Date.now()}.zip`,
+            fileData,
+            "application/zip"
+          );
+
+          // Clean up temp file
+          await worldFileManager.removeWorldPath(zipPath);
+
+          return { downloadUrl: url };
+        } catch (error) {
+          console.error("Erro ao fazer download de mundo:", error);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Erro ao fazer download: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }),
+
+    // Create backup of world
+    backup: protectedProcedure
+      .input(z.object({ worldId: z.number(), backupName: z.string() }))
+      .mutation(async ({ input, ctx }) => {
+        const world = await db.getWorldById(input.worldId);
+        if (!world) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Mundo não encontrado' });
+        }
+
+        const server = await db.getServerById(world.serverId);
+        if (!server || server.userId !== ctx.user.id) {
+          throw new TRPCError({ code: 'FORBIDDEN' });
+        }
+
+        try {
+          const backupPath = path.join(SERVERS_DATA_PATH, server.slug, "worlds", `${input.backupName}_${Date.now()}`);
+          await worldFileManager.cloneWorldForBackup(world.worldPath, backupPath);
+
+          const size = await worldGeneratorApi.getDirectorySize(backupPath);
+
+          const backup = await db.createWorldBackup(world.id, input.backupName);
+          await db.updateWorld(backup.id, {
+            worldPath: backupPath,
+            size,
+          });
+
+          // Log event
+          await db.logServerEvent({
+            serverId: world.serverId,
+            eventType: "backup_created",
+            message: `Backup do mundo criado: ${input.backupName}`,
+          });
+
+          return backup;
+        } catch (error) {
+          console.error("Erro ao criar backup:", error);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Erro ao criar backup: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }),
+
+    // Delete world
+    delete: protectedProcedure
+      .input(z.object({ worldId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        const world = await db.getWorldById(input.worldId);
+        if (!world) {
+          throw new TRPCError({ code: 'NOT_FOUND' });
+        }
+
+        const server = await db.getServerById(world.serverId);
+        if (!server || server.userId !== ctx.user.id) {
+          throw new TRPCError({ code: 'FORBIDDEN' });
+        }
+
+        try {
+          // Remove world from filesystem
+          if (await worldFileManager.pathExists(world.worldPath)) {
+            await worldFileManager.removeWorldPath(world.worldPath);
+          }
+
+          // Remove from database
+          await db.deleteWorld(input.worldId);
+
+          // Log event
+          await db.logServerEvent({
+            serverId: world.serverId,
+            eventType: "config_change",
+            message: `Mundo deletado: ${world.name}`,
+          });
+
+          return { success: true };
+        } catch (error) {
+          console.error("Erro ao deletar mundo:", error);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Erro ao deletar: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
       }),
   }),
 
